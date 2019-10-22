@@ -1,97 +1,90 @@
-﻿using System;
+﻿using Microsoft.IdentityModel.Tokens;
+using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.OpenSsl;
+using Org.BouncyCastle.Security;
+using System;
 using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
+using System.IO;
+using System.Net.Http;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
-using Microsoft.IdentityModel.Tokens;
-using SalesForceJWT.Models;
+using System.Text.Json;
 
 namespace SalesForceJWT.Managers
 {
     public class JWTService : IAuthService
     {
-        public JWTService(string secretKey)
+        private const string audience = "https://test.salesforce.com";
+        private const string client_id = "3MVG9FG3dvS828gLkC4zNXhqw8.tbg5mTTyAG3YfgnnW.3LnsKl.WNIxxy.3tvcL68XchWElJEKoiROLnBoSK";
+        private const string key_file = "C:\\users\\micha\\desktop\\salesforce.key";
+
+        public string GenerateToken(string sub)
         {
-            this.SecretKey = secretKey;
-        }
-
-        public string SecretKey { get; set; }
-
-        public string GenerateToken(IAuthContainerModel model)
-        {
-            if (model == null || model.Claims == null || model.Claims.Length == 0)
+            var tokenDescriptor = new SecurityTokenDescriptor
             {
-                throw new ArgumentException("Arguments to create token are not valid");
-            }
-
-            SecurityTokenDescriptor tokenDescriptor = new SecurityTokenDescriptor
-            {
-                Subject = new ClaimsIdentity(model.Claims),
-                Expires = DateTime.UtcNow.AddMinutes(Convert.ToInt32(model.ExpireMinutes)),
-                SigningCredentials = new SigningCredentials(GetSymmetricSecurityKey(), model.SecurityAlgorithm)
+                Audience = audience,
+                Issuer = client_id,
+                Subject = new ClaimsIdentity(new[] { new Claim(JwtRegisteredClaimNames.Sub, sub) }),
+                Expires = DateTime.UtcNow.AddMinutes(3),
+                SigningCredentials = new SigningCredentials(GetSymmetricSecurityKey(), SecurityAlgorithms.RsaSha256)
             };
 
-            JwtSecurityTokenHandler tokenHandler = new JwtSecurityTokenHandler();
-            SecurityToken securityToken = tokenHandler.CreateToken(tokenDescriptor);
-            string token = tokenHandler.WriteToken(securityToken);
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var securityToken = tokenHandler.CreateToken(tokenDescriptor);
+            var token = tokenHandler.WriteToken(securityToken);
+
             return token;
         }
 
-        public IEnumerable<Claim> GetTokenClaims(string token)
+        public string GetAccessToken(string jwt)
         {
-            if (string.IsNullOrEmpty(token))
+            using (var client = new HttpClient())
             {
-                throw new ArgumentException("Token is null or empty");
+                var content = new FormUrlEncodedContent(new Dictionary<string, string>()
+                {
+                    { "grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer" },
+                    { "assertion", jwt }
+                });
+
+                var response = client.PostAsync($"{audience}/services/oauth2/token", content)
+                    .GetAwaiter().GetResult();
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    var obj = JsonSerializer.Deserialize<TokenResponse>(json);
+                    return obj.access_token as string;
+                }
             }
 
-            TokenValidationParameters validationParameters = GetTokenValidationParameters();
-            JwtSecurityTokenHandler tokenHandler = new JwtSecurityTokenHandler();
-            try
-            {
-                ClaimsPrincipal tokenValid = tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
-                return tokenValid.Claims;
-            }
-            catch(Exception ex)
-            {
-                throw ex;
-            }
-        }
-
-        public bool IsTokenValid(string token)
-        {
-            if (string.IsNullOrEmpty(token))
-            {
-                throw new ArgumentException("Token is null or empty");
-            }
-
-            TokenValidationParameters validationParams = GetTokenValidationParameters();
-
-            JwtSecurityTokenHandler tokenHandler = new JwtSecurityTokenHandler();
-            try
-            {
-                ClaimsPrincipal tokenValid = tokenHandler.ValidateToken(token, validationParams, out SecurityToken validatedToken);
-                return true;
-            }
-            catch(Exception)
-            {
-                return false;
-            }
+            return null;
         }
 
         private SecurityKey GetSymmetricSecurityKey()
         {
-            byte[] symmetricKey = Convert.FromBase64String(SecretKey);
-            return new SymmetricSecurityKey(symmetricKey);
+            var key = File.ReadAllText(key_file);
+            var rsa = GetRsaParameters(key);
+            return new RsaSecurityKey(rsa);
         }
 
-        private TokenValidationParameters GetTokenValidationParameters()
+        private static RSAParameters GetRsaParameters(string rsaPrivateKey)
         {
-            return new TokenValidationParameters()
+            var byteArray = Encoding.ASCII.GetBytes(rsaPrivateKey);
+            using (var ms = new MemoryStream(byteArray))
             {
-                ValidateIssuer = false,
-                ValidateAudience = false,
-                IssuerSigningKey = GetSymmetricSecurityKey()
-            };
+                using (var sr = new StreamReader(ms))
+                {
+                    // use Bouncy Castle to convert the private key to RSA parameters
+                    var pemReader = new PemReader(sr);
+                    return DotNetUtilities.ToRSAParameters((RsaPrivateCrtKeyParameters)pemReader.ReadObject());
+                }
+            }
+        }
+
+        private class TokenResponse
+        {
+            public string access_token { get; set; }
         }
     }
 }

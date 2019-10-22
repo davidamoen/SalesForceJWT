@@ -1,7 +1,5 @@
 ﻿using SalesForceJWT.Managers;
-using SalesForceJWT.Models;
 using System;
-using System.Security.Claims;
 
 namespace SalesForceJWT
 {
@@ -9,22 +7,13 @@ namespace SalesForceJWT
     {
         static void Main(string[] args)
         {
-            IAuthContainerModel model = GetJWTContainerModel("Dave Moen", "david.moen@solutiondesign.com");
-            IAuthService authService = new JWTService(model.SecretKey);
+            IAuthService authService = new JWTService();
 
-            string token = authService.GenerateToken(model);
-        }
+            string jwt = authService.GenerateToken("Subscriptions@solutiondesign.com.full");
+            string accessToken = authService.GetAccessToken(jwt);
 
-        private static JWTContainerModel GetJWTContainerModel(string name, string email)
-        {
-            return new JWTContainerModel
-            {
-                Claims = new Claim[]
-                {
-                    new Claim(ClaimTypes.Name, name),
-                    new Claim(ClaimTypes.Email, email)
-                }
-            };
+            Console.WriteLine("Access Token:");
+            Console.WriteLine(accessToken);
         }
     }
 }
